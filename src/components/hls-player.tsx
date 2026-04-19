@@ -209,6 +209,11 @@ export function HlsPlayer({
       if (autoPlay) {
         video.play().catch((e: DOMException) => {
           if (e.name === 'AbortError') return
+          if (e.name === 'NotAllowedError') {
+            console.warn('[HlsPlayer] Autoplay blocked:', e)
+            setStatus('paused')
+            return
+          }
           markFailure(playingUrl.current)
           tryNext()
         })
@@ -251,7 +256,13 @@ export function HlsPlayer({
       markSuccess(playingUrl.current)
       if (autoPlay) {
         video.play().catch((e) => {
-          if (e.name !== 'AbortError') console.warn('[HlsPlayer] Autoplay blocked:', e)
+          if (e.name === 'AbortError') return
+          if (e.name === 'NotAllowedError') {
+            console.warn('[HlsPlayer] Autoplay blocked:', e)
+            setStatus('paused')
+            return
+          }
+          console.warn('[HlsPlayer] Autoplay error:', e)
         })
       }
     })
@@ -368,7 +379,15 @@ export function HlsPlayer({
         case ' ':
         case 'k':
           e.preventDefault()
-          video.paused ? video.play() : video.pause()
+          if (video.paused) {
+            video.play().catch(err => {
+              if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+                console.warn('[HlsPlayer] Play error:', err)
+              }
+            })
+          } else {
+            video.pause()
+          }
           showControlsTemporarily()
           break
         case 'ArrowUp':
@@ -402,7 +421,15 @@ export function HlsPlayer({
   const handlePlayPause = () => {
     const video = videoRef.current
     if (!video) return
-    video.paused ? video.play() : video.pause()
+    if (video.paused) {
+      video.play().catch((e) => {
+        if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+          console.warn('[HlsPlayer] Play error:', e)
+        }
+      })
+    } else {
+      video.pause()
+    }
     showControlsTemporarily()
   }
 
