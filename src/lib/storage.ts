@@ -1,3 +1,4 @@
+import { get as idbGet, set as idbSet, del as idbDel, clear as idbClear } from 'idb-keyval'
 import type { Channel, CustomSource, WatchHistoryEntry, UserProfile, StreamHealth } from '@/types'
 import { SOURCE_PACKS } from '@/data/source-packs'
 
@@ -89,10 +90,15 @@ export function enablePack(packId: string): void {
   }
 }
 
-export function disablePack(packId: string): void {
+export async function disablePack(packId: string): Promise<void> {
   const current = getEnabledPacks()
   safeSet(KEYS.ENABLED_PACKS, current.filter((id) => id !== packId))
-  safeRemove(KEYS.CHANNELS(packId))
+  safeRemove(KEYS.CHANNELS(packId)) // fallback local storage removal
+  try {
+    await idbDel(KEYS.CHANNELS(packId))
+  } catch (e) {
+    console.error('Failed to clear idb pack', packId, e)
+  }
 }
 
 export function isPackEnabled(packId: string): boolean {
@@ -101,12 +107,31 @@ export function isPackEnabled(packId: string): boolean {
 
 // ── Channels per pack ──────────────────────────────────────────────────────────
 
-export function getChannelsForPack(packId: string): Channel[] {
-  return safeGet<Channel[]>(KEYS.CHANNELS(packId), [])
+export async function getChannelsForPack(packId: string): Promise<Channel[]> {
+  // Graceful migration from localStorage to indexedDB if it still exists there
+  const localVal = safeGet<Channel[] | null>(KEYS.CHANNELS(packId), null)
+  if (localVal && localVal.length > 0) {
+    try { await idbSet(KEYS.CHANNELS(packId), localVal) } catch {}
+    safeRemove(KEYS.CHANNELS(packId))
+    return localVal
+  }
+
+  try {
+    const val = await idbGet<Channel[]>(KEYS.CHANNELS(packId))
+    return val || []
+  } catch {
+    return []
+  }
 }
 
-export function setChannelsForPack(packId: string, channels: Channel[]): boolean {
-  return safeSet(KEYS.CHANNELS(packId), channels)
+export async function setChannelsForPack(packId: string, channels: Channel[]): Promise<boolean> {
+  try {
+    await idbSet(KEYS.CHANNELS(packId), channels)
+    return true
+  } catch (e) {
+    console.warn('[StreamVault] idb write failed:', e)
+    return false
+  }
 }
 
 /** Lookup map from pack ID → priority (higher wins on name conflict). */
@@ -114,13 +139,13 @@ function getPackPriority(packId: string): number {
   return SOURCE_PACKS.find((p) => p.id === packId)?.priority ?? 0
 }
 
-export function getAllChannels(): Channel[] {
+export async function getAllChannels(): Promise<Channel[]> {
   const packs = getEnabledPacks()
   const byName = new Map<string, Channel>()  // normalised name → best channel
 
   for (const packId of packs) {
     const packPriority = getPackPriority(packId)
-    const channels = getChannelsForPack(packId)
+    const channels = await getChannelsForPack(packId)
 
     for (const ch of channels) {
       // Backward compat: channels cached before sources[] was introduced
@@ -160,8 +185,9 @@ export function getAllChannels(): Channel[] {
   return Array.from(byName.values())
 }
 
-export function getChannelById(id: string): Channel | null {
-  return getAllChannels().find((ch) => ch.id === id) ?? null
+export async function getChannelById(id: string): Promise<Channel | null> {
+  const channels = await getAllChannels()
+  return channels.find((ch) => ch.id === id) ?? null
 }
 
 // ── Favorites ──────────────────────────────────────────────────────────────────
@@ -185,9 +211,9 @@ export function isFavorite(channelId: string): boolean {
   return getFavorites().includes(channelId)
 }
 
-export function getFavoriteChannels(): Channel[] {
+export async function getFavoriteChannels(): Promise<Channel[]> {
   const ids = getFavorites()
-  const all = getAllChannels()
+  const all = await getAllChannels()
   const map = new Map(all.map((ch) => [ch.id, ch]))
   return ids.map((id) => map.get(id)).filter(Boolean) as Channel[]
 }
@@ -203,10 +229,9 @@ export function addCustomSource(source: CustomSource): void {
   safeSet(KEYS.CUSTOM_SOURCES, [...current, source])
 }
 
-export function removeCustomSource(id: string): void {
+export async function removeCustomSource(id: string): Promise<void> {
   safeSet(KEYS.CUSTOM_SOURCES, getCustomSources().filter((s) => s.id !== id))
-  safeRemove(KEYS.CHANNELS(id))
-  disablePack(id)
+  await disablePack(id)
 }
 
 // ── Watch history ──────────────────────────────────────────────────────────────
@@ -257,7 +282,7 @@ export function importProfile(profile: UserProfile): void {
 
 // ── Clear all ──────────────────────────────────────────────────────────────────
 
-export function clearAllData(): void {
+export async function clearAllData(): Promise<void> {
   if (typeof window === 'undefined') return
   try {
     const keysToRemove: string[] = []
@@ -268,6 +293,7 @@ export function clearAllData(): void {
       }
     }
     keysToRemove.forEach((k) => localStorage.removeItem(k))
+    await idbClear()
   } catch {
     // ignore
   }

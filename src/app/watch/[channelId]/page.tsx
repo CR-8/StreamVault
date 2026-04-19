@@ -165,7 +165,7 @@ export default function WatchPage({ params }: WatchPageProps) {
               </div>
               <Separator />
               <ScrollArea className="h-[calc(100vh-16rem)] lg:h-[520px]">
-                <div className="p-3 space-y-2">
+                <div className="p-2 space-y-2">
                   {relatedChannels.map((ch) => (
                     <ChannelCard key={ch.id} channel={ch} variant="compact" />
                   ))}

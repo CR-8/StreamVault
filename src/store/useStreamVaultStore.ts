@@ -52,12 +52,12 @@ interface StreamVaultState {
   // Actions
   initialize: () => Promise<void>
   enablePack: (packId: string, m3uUrl: string) => Promise<void>
-  disablePack: (packId: string) => void
+  disablePack: (packId: string) => Promise<void>
   toggleFavorite: (channelId: string) => void
   addCustomSource: (source: CustomSource, m3uUrl: string) => Promise<void>
-  removeCustomSource: (id: string) => void
+  removeCustomSource: (id: string) => Promise<void>
   addToHistory: (channel: Channel) => void
-  refreshChannels: () => void
+  refreshChannels: () => Promise<void>
   /** Call when a stream URL plays successfully */
   markStreamSuccess: (url: string) => void
   /** Call when a stream URL fails fatally */
@@ -90,13 +90,21 @@ export const useStreamVaultStore = create<StreamVaultState>()(
         favorites: getFavorites(),
         customSources: getCustomSources(),
         history: getWatchHistory(),
-        channels: getAllChannels(),
         streamHealth: getStreamHealth(),
         storageWarning: isNearStorageLimit(),
       })
 
+      // Load channels via IDB
+      const channels = await getAllChannels()
+      set({ channels })
+
       // Load packs that have no cached channels yet
-      const toFetch = packs.filter((id) => getChannelsForPack(id).length === 0)
+      const toFetch: string[] = []
+      for (const id of packs) {
+        const chs = await getChannelsForPack(id)
+        if (chs.length === 0) toFetch.push(id)
+      }
+
       if (toFetch.length > 0) {
         const { SOURCE_PACKS } = await import('@/data/source-packs')
         await Promise.allSettled(
@@ -118,13 +126,14 @@ export const useStreamVaultStore = create<StreamVaultState>()(
         const text = await fetchM3U(m3uUrl)
         const parsed = parseM3U(text, packId)
 
-        setChannelsForPack(packId, parsed)
+        await setChannelsForPack(packId, parsed)
         enablePack(packId)
 
         const packs = getEnabledPacks()
+        const channels = await getAllChannels()
         set((state) => ({
           enabledPacks: packs,
-          channels: getAllChannels(),
+          channels,
           loadingStates: { ...state.loadingStates, [packId]: 'done' },
           storageWarning: isNearStorageLimit(),
         }))
@@ -137,12 +146,13 @@ export const useStreamVaultStore = create<StreamVaultState>()(
       }
     },
 
-    disablePack: (packId: string) => {
-      disablePack(packId)
+    disablePack: async (packId: string) => {
+      await disablePack(packId)
       const packs = getEnabledPacks()
+      const channels = await getAllChannels()
       set({
         enabledPacks: packs,
-        channels: getAllChannels(),
+        channels,
       })
     },
 
@@ -161,13 +171,14 @@ export const useStreamVaultStore = create<StreamVaultState>()(
       await get().enablePack(source.id, m3uUrl)
     },
 
-    removeCustomSource: (id: string) => {
-      removeCustomSource(id)
+    removeCustomSource: async (id: string) => {
+      await removeCustomSource(id)
       const packs = getEnabledPacks()
+      const channels = await getAllChannels()
       set({
         customSources: getCustomSources(),
         enabledPacks: packs,
-        channels: getAllChannels(),
+        channels,
       })
     },
 
@@ -181,9 +192,10 @@ export const useStreamVaultStore = create<StreamVaultState>()(
       set({ history: getWatchHistory() })
     },
 
-    refreshChannels: () => {
+    refreshChannels: async () => {
+      const channels = await getAllChannels()
       set({
-        channels: getAllChannels(),
+        channels,
         favorites: getFavorites(),
         history: getWatchHistory(),
       })
