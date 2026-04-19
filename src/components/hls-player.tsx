@@ -7,7 +7,7 @@ import {
   useCallback,
   useMemo,
 } from 'react'
-import Hls, { type Level } from 'hls.js'
+import Hls, { XhrLoader, type Level } from 'hls.js'
 import {
   AlertTriangle,
   RefreshCw,
@@ -22,6 +22,7 @@ import {
   Settings,
   Wifi,
   Radio,
+  ClosedCaption,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -59,8 +60,30 @@ function isHlsUrl(url: string): boolean {
   return path.endsWith('.m3u8') || path.endsWith('.m3u') || path.includes('/hls/')
 }
 
+// Store long URLs server-side to avoid GET length limits
+const urlCache = new Map<string, string>()
+
+function generateUrlId(): string {
+  return Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
+}
+
 function proxyUrl(url: string): string {
-  return `/api/proxy?url=${encodeURIComponent(url)}`
+  // For extremely long URLs (>2KB), store server-side and reference by ID
+  const getUrl = `/api/proxy?url=${encodeURIComponent(url)}`
+  
+  if (getUrl.length > 2000) {
+    const urlId = generateUrlId()
+    urlCache.set(urlId, url)
+    // Store in sessionStorage as backup
+    if (typeof window !== 'undefined') {
+      const stored = JSON.parse(sessionStorage.getItem('urlCache') || '{}')
+      stored[urlId] = url
+      sessionStorage.setItem('urlCache', JSON.stringify(stored))
+    }
+    return `/api/proxy?urlId=${urlId}`
+  }
+  
+  return getUrl
 }
 
 interface PlayQueueItem {
@@ -75,12 +98,28 @@ function buildPlayQueue(sources: string[], health: Record<string, number>): Play
   
   const queue: PlayQueueItem[] = []
   
+  // Known domains that return 302 redirects without CORS headers, or auth URLs that need proxying
+  const ALWAYS_PROXY_DOMAINS = ['jmp2.uk', 'pluto.tv']
+  
+  const shouldAlwaysProxy = (source: string) => {
+    try {
+      const url = new URL(source)
+      return ALWAYS_PROXY_DOMAINS.some(domain => url.hostname?.includes(domain))
+    } catch {
+      return false
+    }
+  }
+  
   sorted.forEach((source, srcIdx) => {
     // If we're on HTTPS and the source is HTTP, we MUST proxy it. Direct HTTP will fail.
+    // Also proxy known problematic domains that return 302/redirect responses
     if (isHttps && source.startsWith('http:')) {
       queue.push({ url: proxyUrl(source), isProxy: true, srcIdx })
+    } else if (shouldAlwaysProxy(source)) {
+      // Known problematic domains: proxy first before trying direct
+      queue.push({ url: proxyUrl(source), isProxy: true, srcIdx })
     } else {
-      // Normal flow: add direct, then we'll add proxy later
+      // Normal HTTPS sources from trusted providers: try direct first
       queue.push({ url: source, isProxy: false, srcIdx })
     }
   })
@@ -88,6 +127,10 @@ function buildPlayQueue(sources: string[], health: Record<string, number>): Play
   // Add proxy versions as fallbacks for everything that wasn't already ONLY proxied
   sorted.forEach((source, srcIdx) => {
     if (isHttps && source.startsWith('http:')) {
+      // Already exclusively proxied, don't add again
+      return
+    }
+    if (shouldAlwaysProxy(source)) {
       // Already exclusively proxied, don't add again
       return
     }
@@ -117,11 +160,14 @@ export function HlsPlayer({
   const hlsRef = useRef<Hls | null>(null)
   const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const allSources = useRef<string[]>([])
   const queueRef = useRef<PlayQueueItem[]>([])
   const queueIdx = useRef(0)
   const playingUrl = useRef('')
   const isProxy = useRef(false)
+  const retryAttempts = useRef(0)
+  const maxRetries = 2  // Retry each source up to 2 times with backoff
   // Use a ref for status so timeout callbacks read fresh value
   const statusRef = useRef<PlayerStatus>('idle')
 
@@ -136,6 +182,8 @@ export function HlsPlayer({
   const [currentLevel, setCurrentLevel] = useState(-1)   // -1 = auto
   const [isPiP, setIsPiP] = useState(false)
   const [pipSupported, setPipSupported] = useState(false)
+  const [subtitles, setSubtitles] = useState<{ id: string; label: string; lang?: string; kind: string }[]>([])
+  const [currentSubtitle, setCurrentSubtitle] = useState(-1)
 
   // Sync status ref with state
   const setStatus = useCallback((s: PlayerStatus) => {
@@ -166,15 +214,20 @@ export function HlsPlayer({
     if (stallTimer.current) { clearTimeout(stallTimer.current); stallTimer.current = null }
   }, [])
 
+  const clearRetryTimer = useCallback(() => {
+    if (retryTimer.current) { clearTimeout(retryTimer.current); retryTimer.current = null }
+  }, [])
+
   // ── Destroy HLS instance ──────────────────────────────────────────────────
   const destroyHls = useCallback(() => {
     clearStallTimer()
+    clearRetryTimer()
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null }
     setLevels([])
     setCurrentLevel(-1)
-  }, [clearStallTimer])
+  }, [clearStallTimer, clearRetryTimer])
 
-  // ── Try the next URL in the queue ─────────────────────────────────────────
+  // ── Try the next URL in the queue (with retry logic) ──────────────────────
   const tryNext = useCallback(() => {
     const video = videoRef.current
     if (!video) return
@@ -189,7 +242,23 @@ export function HlsPlayer({
     const { url, isProxy: proxied, srcIdx } = queue[queueIdx.current]
     const total = allSources.current.length
 
+    // Exponential backoff for retries: 1s, 2s, 4s
+    if (retryAttempts.current > 0) {
+      const backoffMs = Math.min(1000 * Math.pow(2, retryAttempts.current - 1), 4000)
+      const retryDisplay = retryAttempts.current <= maxRetries ? ` (retry ${retryAttempts.current}/${maxRetries})` : ''
+      
+      setErrorMessage(`Retrying in ${backoffMs}ms...${retryDisplay}`)
+      
+      clearRetryTimer()
+      retryTimer.current = setTimeout(() => {
+        retryAttempts.current = 0
+        tryNext()
+      }, backoffMs)
+      return
+    }
+
     queueIdx.current++
+    retryAttempts.current = 0
     isProxy.current = proxied
     playingUrl.current = allSources.current[srcIdx] ?? url
 
@@ -221,20 +290,88 @@ export function HlsPlayer({
           if (e.name === 'NotSupportedError') {
              // Fall through to failure
           }
-          markFailure(playingUrl.current)
-          tryNext()
+          if (retryAttempts.current < maxRetries) {
+            retryAttempts.current++
+            tryNext()
+          } else {
+            markFailure(playingUrl.current)
+            tryNext()
+          }
         })
       }
       stallTimer.current = setTimeout(() => {
         if (statusRef.current !== 'playing' && statusRef.current !== 'paused') {
-          markFailure(playingUrl.current)
-          tryNext()
+          if (retryAttempts.current < maxRetries) {
+            retryAttempts.current++
+            tryNext()
+          } else {
+            markFailure(playingUrl.current)
+            tryNext()
+          }
         }
       }, 10_000)
       return
     }
 
     // ── HLS.js path ───────────────────────────────────────────────────────
+
+    // Custom loader: extends XhrLoader, only intercepts urlId proxy requests via POST.
+    // Everything else is handled by the native XhrLoader so hls.js internals stay intact.
+    class ProxyLoader extends XhrLoader {
+      load(context: any, config: any, callbacks: any) {
+        const { url } = context
+
+        if (url && url.includes('/api/proxy?urlId=')) {
+          const urlId = new URL(url, window.location.origin).searchParams.get('urlId')
+          if (urlId) {
+            const stored = JSON.parse(sessionStorage.getItem('urlCache') || '{}')
+            const originalUrl = stored[urlId]
+
+            if (originalUrl) {
+              const controller = new AbortController()
+              ;(this as any)._abortController = controller
+
+              const stats = {
+                aborted: false, loaded: 0, retry: 0, total: 0, chunkCount: 0, bwEstimate: 0,
+                loading: { start: performance.now(), first: 0, end: 0 },
+                parsing: { start: 0, end: 0 },
+                buffering: { start: 0, first: 0, end: 0 },
+              }
+
+              fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: originalUrl }),
+                signal: controller.signal,
+              })
+                .then(res => {
+                  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+                  return res.arrayBuffer()
+                })
+                .then(data => {
+                  const now = performance.now()
+                  stats.loading.first = stats.loading.end = now
+                  stats.loaded = stats.total = data.byteLength
+                  callbacks.onSuccess({ data, url, code: 200 }, stats, context, null)
+                })
+                .catch((err) => {
+                  if (err.name === 'AbortError') return
+                  callbacks.onError({ code: 500, text: err.message }, context, null, stats)
+                })
+              return
+            }
+          }
+        }
+
+        // Delegate to native XhrLoader for all other URLs
+        super.load(context, config, callbacks)
+      }
+
+      abort() {
+        ;(this as any)._abortController?.abort()
+        super.abort()
+      }
+    }
 
     const hls = new Hls({
       enableWorker: true,
@@ -245,7 +382,7 @@ export function HlsPlayer({
       maxBufferLength: 30,
       maxMaxBufferLength: 60,
       startPosition: -1,
-      xhrSetup: (xhr) => { xhr.withCredentials = false },
+      loader: ProxyLoader as any,
     })
 
     hls.loadSource(url)
@@ -253,6 +390,7 @@ export function HlsPlayer({
 
     hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
       clearStallTimer()
+      clearRetryTimer()
       setLevels(data.levels)
       setStatus('playing')
       markSuccess(playingUrl.current)
@@ -273,12 +411,22 @@ export function HlsPlayer({
       setCurrentLevel(data.level)
     })
 
+    // Subtitle track events
+    hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_, data) => {
+      const tracks = data.subtitleTracks.map((t, idx) => ({
+        id: String(idx),
+        label: t.name || `Track ${idx + 1}`,
+        lang: t.lang,
+        kind: t.kind || 'subtitles',
+      }))
+      setSubtitles(tracks)
+    })
+
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (!data.fatal) return
 
       clearStallTimer()
-      markFailure(playingUrl.current)
-
+      
       if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
         hls.recoverMediaError()
         stallTimer.current = setTimeout(() => {
@@ -287,20 +435,33 @@ export function HlsPlayer({
         return
       }
 
-      tryNext()
+      // Retry with backoff for fatal errors (except certain error types)
+      if (retryAttempts.current < maxRetries && 
+          data.type !== Hls.ErrorTypes.KEY_SYSTEM_ERROR) {
+        retryAttempts.current++
+        tryNext()
+      } else {
+        markFailure(playingUrl.current)
+        tryNext()
+      }
     })
 
     // Manifest stall guard
     stallTimer.current = setTimeout(() => {
       if (statusRef.current !== 'playing' && statusRef.current !== 'paused') {
-        markFailure(playingUrl.current)
-        tryNext()
+        if (retryAttempts.current < maxRetries) {
+          retryAttempts.current++
+          tryNext()
+        } else {
+          markFailure(playingUrl.current)
+          tryNext()
+        }
       }
     }, 12_000)
 
     hlsRef.current = hls
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoPlay, clearStallTimer, destroyHls, markSuccess, markFailure])
+  }, [autoPlay, clearStallTimer, clearRetryTimer, destroyHls, markSuccess, markFailure])
 
   // ── Start / restart the whole queue ──────────────────────────────────────
   const initPlayer = useCallback(() => {
@@ -477,6 +638,13 @@ export function HlsPlayer({
     setCurrentLevel(levelIndex)
   }
 
+  const handleSubtitleChange = (trackIndex: number) => {
+    const hls = hlsRef.current
+    if (!hls) return
+    hls.subtitleTrack = trackIndex
+    setCurrentSubtitle(trackIndex)
+  }
+
   const handleRetry = () => initPlayer()
 
   // ── Derived state ─────────────────────────────────────────────────────────
@@ -512,6 +680,7 @@ export function HlsPlayer({
         ref={videoRef}
         className="w-full h-full object-contain"
         playsInline
+        crossOrigin="anonymous"
         title={channelName}
         aria-label={`${channelName} live stream`}
       />
@@ -648,6 +817,45 @@ export function HlsPlayer({
                     {formatQuality(lvl)}
                     {lvl.bitrate && (
                       <span className="ml-auto text-muted-foreground">{Math.round(lvl.bitrate / 1000)}k</span>
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+
+          {/* Subtitle/CC selector */}
+          {subtitles.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className={cn(
+                    'flex items-center gap-1 text-white hover:text-primary transition-colors p-1.5 rounded-md hover:bg-white/10',
+                    currentSubtitle !== -1 && 'text-primary'
+                  )}
+                  aria-label="Subtitle settings"
+                >
+                  <ClosedCaption className="h-4 w-4" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="min-w-[140px]">
+                <DropdownMenuLabel className="text-xs text-muted-foreground">Subtitles</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => handleSubtitleChange(-1)}
+                  className={cn('text-xs', currentSubtitle === -1 && 'text-primary font-semibold')}
+                >
+                  Off
+                </DropdownMenuItem>
+                {subtitles.map((track, idx) => (
+                  <DropdownMenuItem
+                    key={track.id}
+                    onClick={() => handleSubtitleChange(idx)}
+                    className={cn('text-xs', currentSubtitle === idx && 'text-primary font-semibold')}
+                  >
+                    {track.label}
+                    {track.lang && (
+                      <span className="ml-auto text-muted-foreground uppercase">{track.lang}</span>
                     )}
                   </DropdownMenuItem>
                 ))}
