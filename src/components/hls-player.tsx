@@ -50,7 +50,12 @@ interface HlsPlayerProps {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isHlsUrl(url: string): boolean {
-  const path = url.split('?')[0].toLowerCase()
+  let target = url
+  if (url.startsWith('/api/proxy')) {
+    const match = url.match(/[?&]url=([^&]+)/)
+    if (match) target = decodeURIComponent(match[1])
+  }
+  const path = target.split('?')[0].toLowerCase()
   return path.endsWith('.m3u8') || path.endsWith('.m3u') || path.includes('/hls/')
 }
 
@@ -58,9 +63,38 @@ function proxyUrl(url: string): string {
   return `/api/proxy?url=${encodeURIComponent(url)}`
 }
 
-function buildPlayQueue(sources: string[], health: Record<string, number>): string[] {
+interface PlayQueueItem {
+  url: string
+  isProxy: boolean
+  srcIdx: number
+}
+
+function buildPlayQueue(sources: string[], health: Record<string, number>): PlayQueueItem[] {
   const sorted = [...sources].sort((a, b) => (health[b] ?? 0) - (health[a] ?? 0))
-  return [...sorted, ...sorted.map(proxyUrl)]
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:'
+  
+  const queue: PlayQueueItem[] = []
+  
+  sorted.forEach((source, srcIdx) => {
+    // If we're on HTTPS and the source is HTTP, we MUST proxy it. Direct HTTP will fail.
+    if (isHttps && source.startsWith('http:')) {
+      queue.push({ url: proxyUrl(source), isProxy: true, srcIdx })
+    } else {
+      // Normal flow: add direct, then we'll add proxy later
+      queue.push({ url: source, isProxy: false, srcIdx })
+    }
+  })
+
+  // Add proxy versions as fallbacks for everything that wasn't already ONLY proxied
+  sorted.forEach((source, srcIdx) => {
+    if (isHttps && source.startsWith('http:')) {
+      // Already exclusively proxied, don't add again
+      return
+    }
+    queue.push({ url: proxyUrl(source), isProxy: true, srcIdx })
+  })
+
+  return queue
 }
 
 function formatQuality(level: Level): string {
@@ -78,30 +112,30 @@ export function HlsPlayer({
   autoPlay = true,
   className,
 }: HlsPlayerProps) {
-  const videoRef        = useRef<HTMLVideoElement>(null)
-  const containerRef    = useRef<HTMLDivElement>(null)
-  const hlsRef          = useRef<Hls | null>(null)
-  const stallTimer      = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const controlsTimer   = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const allSources      = useRef<string[]>([])
-  const queueRef        = useRef<string[]>([])
-  const queueIdx        = useRef(0)
-  const playingUrl      = useRef('')
-  const isProxy         = useRef(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const hlsRef = useRef<Hls | null>(null)
+  const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const controlsTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const allSources = useRef<string[]>([])
+  const queueRef = useRef<PlayQueueItem[]>([])
+  const queueIdx = useRef(0)
+  const playingUrl = useRef('')
+  const isProxy = useRef(false)
   // Use a ref for status so timeout callbacks read fresh value
-  const statusRef       = useRef<PlayerStatus>('idle')
+  const statusRef = useRef<PlayerStatus>('idle')
 
-  const [status,        setStatusState]  = useState<PlayerStatus>('idle')
-  const [errorMessage,  setErrorMessage] = useState('')
-  const [sourceLabel,   setSourceLabel]  = useState('')
-  const [volume,        setVolume]       = useState(1)
-  const [muted,         setMuted]        = useState(false)
-  const [isFullscreen,  setIsFullscreen] = useState(false)
-  const [showControls,  setShowControls] = useState(true)
-  const [levels,        setLevels]       = useState<Level[]>([])
-  const [currentLevel,  setCurrentLevel] = useState(-1)   // -1 = auto
-  const [isPiP,         setIsPiP]        = useState(false)
-  const [pipSupported,  setPipSupported] = useState(false)
+  const [status, setStatusState] = useState<PlayerStatus>('idle')
+  const [errorMessage, setErrorMessage] = useState('')
+  const [sourceLabel, setSourceLabel] = useState('')
+  const [volume, setVolume] = useState(1)
+  const [muted, setMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [showControls, setShowControls] = useState(true)
+  const [levels, setLevels] = useState<Level[]>([])
+  const [currentLevel, setCurrentLevel] = useState(-1)   // -1 = auto
+  const [isPiP, setIsPiP] = useState(false)
+  const [pipSupported, setPipSupported] = useState(false)
 
   // Sync status ref with state
   const setStatus = useCallback((s: PlayerStatus) => {
@@ -111,7 +145,7 @@ export function HlsPlayer({
 
   const markSuccess = useStreamVaultStore((s) => s.markStreamSuccess)
   const markFailure = useStreamVaultStore((s) => s.markStreamFailure)
-  const health      = useStreamVaultStore((s) => s.streamHealth)
+  const health = useStreamVaultStore((s) => s.streamHealth)
 
   // ── SSR-safe PiP detection ────────────────────────────────────────────────
   useEffect(() => {
@@ -152,14 +186,11 @@ export function HlsPlayer({
       return
     }
 
-    const url     = queue[queueIdx.current]
-    const n       = allSources.current.length
-    const srcIdx  = queueIdx.current < n ? queueIdx.current : queueIdx.current - n
-    const total   = n
-    const proxied = queueIdx.current >= n
+    const { url, isProxy: proxied, srcIdx } = queue[queueIdx.current]
+    const total = allSources.current.length
 
     queueIdx.current++
-    isProxy.current   = proxied
+    isProxy.current = proxied
     playingUrl.current = allSources.current[srcIdx] ?? url
 
     setSourceLabel(
@@ -199,14 +230,14 @@ export function HlsPlayer({
     }
 
     const hls = new Hls({
-      enableWorker:           true,
-      lowLatencyMode:         false,
-      fragLoadingTimeOut:     15_000,
+      enableWorker: true,
+      lowLatencyMode: false,
+      fragLoadingTimeOut: 15_000,
       manifestLoadingTimeOut: 10_000,
-      levelLoadingTimeOut:    10_000,
-      maxBufferLength:        30,
-      maxMaxBufferLength:     60,
-      startPosition:          -1,
+      levelLoadingTimeOut: 10_000,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      startPosition: -1,
       xhrSetup: (xhr) => { xhr.withCredentials = false },
     })
 
@@ -255,18 +286,18 @@ export function HlsPlayer({
     }, 12_000)
 
     hlsRef.current = hls
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoPlay, clearStallTimer, destroyHls, markSuccess, markFailure])
 
   // ── Start / restart the whole queue ──────────────────────────────────────
   const initPlayer = useCallback(() => {
     const unique = [...new Set([streamUrl, ...sources].filter(Boolean))]
     allSources.current = unique
-    queueRef.current   = buildPlayQueue(unique, health)
-    queueIdx.current   = 0
+    queueRef.current = buildPlayQueue(unique, health)
+    queueIdx.current = 0
     setShowControls(true)
     tryNext()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamUrl, sources, tryNext])
 
   useEffect(() => {
@@ -279,13 +310,13 @@ export function HlsPlayer({
     const video = videoRef.current
     if (!video) return
 
-    const onPlaying  = () => { setStatus('playing'); showControlsTemporarily() }
-    const onPause    = () => { setStatus('paused'); setShowControls(true) }
-    const onWaiting  = () => {
+    const onPlaying = () => { setStatus('playing'); showControlsTemporarily() }
+    const onPause = () => { setStatus('paused'); setShowControls(true) }
+    const onWaiting = () => {
       // Only show buffering when stream was already playing
       if (statusRef.current === 'playing') setStatus('buffering')
     }
-    const onCanPlay  = () => {
+    const onCanPlay = () => {
       if (statusRef.current === 'buffering') setStatus('playing')
     }
     const onVolumeChange = () => {
@@ -295,20 +326,20 @@ export function HlsPlayer({
     const onEnterPiP = () => setIsPiP(true)
     const onLeavePiP = () => setIsPiP(false)
 
-    video.addEventListener('playing',          onPlaying)
-    video.addEventListener('pause',            onPause)
-    video.addEventListener('waiting',          onWaiting)
-    video.addEventListener('canplay',          onCanPlay)
-    video.addEventListener('volumechange',     onVolumeChange)
+    video.addEventListener('playing', onPlaying)
+    video.addEventListener('pause', onPause)
+    video.addEventListener('waiting', onWaiting)
+    video.addEventListener('canplay', onCanPlay)
+    video.addEventListener('volumechange', onVolumeChange)
     video.addEventListener('enterpictureinpicture', onEnterPiP)
     video.addEventListener('leavepictureinpicture', onLeavePiP)
 
     return () => {
-      video.removeEventListener('playing',          onPlaying)
-      video.removeEventListener('pause',            onPause)
-      video.removeEventListener('waiting',          onWaiting)
-      video.removeEventListener('canplay',          onCanPlay)
-      video.removeEventListener('volumechange',     onVolumeChange)
+      video.removeEventListener('playing', onPlaying)
+      video.removeEventListener('pause', onPause)
+      video.removeEventListener('waiting', onWaiting)
+      video.removeEventListener('canplay', onCanPlay)
+      video.removeEventListener('volumechange', onVolumeChange)
       video.removeEventListener('enterpictureinpicture', onEnterPiP)
       video.removeEventListener('leavepictureinpicture', onLeavePiP)
     }
@@ -364,7 +395,7 @@ export function HlsPlayer({
 
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showControlsTemporarily])
 
   // ── Control handlers ──────────────────────────────────────────────────────
@@ -420,12 +451,12 @@ export function HlsPlayer({
   const handleRetry = () => initPlayer()
 
   // ── Derived state ─────────────────────────────────────────────────────────
-  const isLoading   = status === 'loading'
+  const isLoading = status === 'loading'
   const isBuffering = status === 'buffering'
-  const isError     = status === 'error'
-  const isPlaying   = status === 'playing' || status === 'buffering'
-  const isPaused    = status === 'paused'
-  const isActive    = isPlaying || isPaused
+  const isError = status === 'error'
+  const isPlaying = status === 'playing' || status === 'buffering'
+  const isPaused = status === 'paused'
+  const isActive = isPlaying || isPaused
 
   const currentLevelLabel = useMemo(() => {
     if (currentLevel === -1 || !levels[currentLevel]) return 'Auto'
@@ -519,7 +550,7 @@ export function HlsPlayer({
               aria-label={isPaused ? 'Play' : 'Pause'}
             >
               {isPaused
-                ? <Play  className="h-5 w-5 fill-current" />
+                ? <Play className="h-5 w-5 fill-current" />
                 : <Pause className="h-5 w-5 fill-current" />
               }
             </button>
