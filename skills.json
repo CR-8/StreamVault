@@ -1,0 +1,33 @@
+{
+  "detectedIDEs": [
+    "claudeCode",
+    "codex"
+  ],
+  "installedSkills": [
+    {
+      "name": "frontend-design",
+      "sourceUrl": "https://raw.githubusercontent.com/CR-8/ruledrop-community/main/skills/frontend-design/skill.md",
+      "installedAt": "2026-04-19T10:37:17.296Z"
+    },
+    {
+      "name": "premium-ui",
+      "sourceUrl": "https://raw.githubusercontent.com/CR-8/ruledrop-community/main/skills/premium-ui/skill.md",
+      "installedAt": "2026-04-19T10:37:26.980Z"
+    },
+    {
+      "name": "tailwind-shadcn",
+      "sourceUrl": "https://raw.githubusercontent.com/CR-8/ruledrop-community/main/skills/tailwind-shadcn/skill.md",
+      "installedAt": "2026-04-19T10:37:30.976Z"
+    },
+    {
+      "name": "context-provider",
+      "sourceUrl": "https://raw.githubusercontent.com/CR-8/ruledrop-community/main/skills/context-provider/skill.md",
+      "installedAt": "2026-04-19T10:37:34.145Z"
+    },
+    {
+      "name": "nextjs-seo",
+      "sourceUrl": "https://raw.githubusercontent.com/CR-8/ruledrop-community/main/skills/nextjs-seo/skill.md",
+      "installedAt": "2026-04-19T10:37:37.216Z"
+    }
+  ]
+}

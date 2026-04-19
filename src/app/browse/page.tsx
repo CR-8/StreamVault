@@ -1,0 +1,377 @@
+'use client'
+
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { ChannelCard, ChannelCardSkeleton } from '@/components/channel-card'
+import { EpgCard, EpgCardSkeleton } from '@/components/epg-card'
+import { FilterSidebar, SearchBar, type Filters, DEFAULT_FILTERS } from '@/components/filter-sidebar'
+import { useStreamVaultStore } from '@/store/useStreamVaultStore'
+import { useEpgStore } from '@/store/useEpgStore'
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
+import { Tv2, CalendarDays, Loader2, RefreshCw, Radio } from 'lucide-react'
+import Link from 'next/link'
+
+const PAGE_SIZE = 60
+
+function sortChannels(
+  channels: ReturnType<typeof useStreamVaultStore.getState>['channels'],
+  sort: Filters['sort']
+) {
+  return [...channels].sort((a, b) => {
+    switch (sort) {
+      case 'name-asc':  return a.name.localeCompare(b.name)
+      case 'name-desc': return b.name.localeCompare(a.name)
+      case 'category':  return a.groupTitle.localeCompare(b.groupTitle) || a.name.localeCompare(b.name)
+      case 'country':   return a.country.localeCompare(b.country) || a.name.localeCompare(b.name)
+      default: return 0
+    }
+  })
+}
+
+// ── EPG / Live Guide view ─────────────────────────────────────────────────────
+
+function EpgView({ channels }: { channels: ReturnType<typeof useStreamVaultStore.getState>['channels'] }) {
+  const { data, state, progress, loadEpg, clear } = useEpgStore()
+  const hasFetched = useRef(false)
+  const epgCapable = useMemo(() => channels.filter((ch) => !!ch.tvgId), [channels])
+
+  useEffect(() => {
+    if (epgCapable.length === 0) return
+    if (hasFetched.current && state !== 'idle') return
+    hasFetched.current = true
+    loadEpg(channels)
+  }, [epgCapable.length]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleRefresh = () => {
+    clear()
+    hasFetched.current = false
+    loadEpg(channels)
+  }
+
+  const { liveChannels, otherChannels } = useMemo(() => {
+    const live: typeof epgCapable = []
+    const other: typeof epgCapable = []
+    for (const ch of epgCapable) {
+      const epg = data.get(ch.tvgId!)
+      if (epg?.current) live.push(ch)
+      else other.push(ch)
+    }
+    return { liveChannels: live, otherChannels: other }
+  }, [epgCapable, data])
+
+  const isLoading = state === 'loading'
+  const isDone    = state === 'done'
+
+  if (epgCapable.length === 0 && !isLoading) {
+    return (
+      <div className="flex flex-col items-center gap-3 py-20 text-center">
+        <Radio className="h-10 w-10 text-muted-foreground" />
+        <div>
+          <p className="font-semibold">No EPG-capable channels</p>
+          <p className="text-sm text-muted-foreground mt-1 max-w-sm mx-auto">
+            None of your enabled channels include a <code className="text-xs bg-muted px-1 py-0.5 rounded">tvg-id</code> EPG identifier.
+            Enable the <strong>Free TV</strong> pack or similar curated sources from the Marketplace.
+          </p>
+        </div>
+        <Button asChild variant="outline"><Link href="/marketplace">Marketplace</Link></Button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-8">
+      {/* Status bar */}
+      <div className="flex items-center justify-between gap-4 rounded-xl border border-border/50 bg-card px-4 py-3">
+        <div className="flex items-center gap-3 min-w-0">
+          {isLoading ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin text-primary shrink-0" />
+              <div className="flex items-center gap-2">
+                <div className="h-1.5 w-32 rounded-full bg-border overflow-hidden">
+                  <div
+                    className="h-full bg-primary transition-all duration-300 rounded-full"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
+                <span className="text-xs tabular-nums text-muted-foreground">{progress}%</span>
+              </div>
+              <span className="text-sm text-muted-foreground truncate">Loading programme guide…</span>
+            </>
+          ) : isDone ? (
+            <p className="text-sm text-muted-foreground">
+              <span className="font-semibold text-foreground">{liveChannels.length}</span> live now
+              {' · '}
+              <span>{otherChannels.length} no data</span>
+            </p>
+          ) : null}
+        </div>
+        {(isDone || state === 'error') && (
+          <Button variant="ghost" size="sm" className="gap-1.5 shrink-0" onClick={handleRefresh}>
+            <RefreshCw className="h-3.5 w-3.5" />
+            Refresh
+          </Button>
+        )}
+      </div>
+
+      {/* Live Now section */}
+      {(isLoading || liveChannels.length > 0) && (
+        <section>
+          <div className="flex items-center gap-2 mb-4">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-500 opacity-75" />
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500" />
+            </span>
+            <h2 className="text-base font-semibold">Live Now</h2>
+            {!isLoading && (
+              <span className="text-sm text-muted-foreground">({liveChannels.length})</span>
+            )}
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+            {isLoading
+              ? Array.from({ length: 10 }).map((_, i) => <EpgCardSkeleton key={i} />)
+              : liveChannels.map((ch) => (
+                  <EpgCard key={ch.id} channel={ch} epg={data.get(ch.tvgId!) ?? null} />
+                ))}
+          </div>
+        </section>
+      )}
+
+      {/* Empty state */}
+      {isDone && liveChannels.length === 0 && (
+        <div className="flex flex-col items-center gap-3 py-16 text-center">
+          <CalendarDays className="h-10 w-10 text-muted-foreground" />
+          <div>
+            <p className="font-semibold">No live programmes right now</p>
+            <p className="text-sm text-muted-foreground mt-1">EPG data loaded but no channels are airing a current programme.</p>
+          </div>
+          <Button variant="outline" size="sm" className="gap-2" onClick={handleRefresh}>
+            <RefreshCw className="h-3.5 w-3.5" /> Refresh EPG
+          </Button>
+        </div>
+      )}
+
+      {/* Not currently live */}
+      {isDone && otherChannels.length > 0 && (
+        <section>
+          <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">
+            Not currently live ({otherChannels.length})
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+            {otherChannels.map((ch) => (
+              <EpgCard key={ch.id} channel={ch} epg={data.get(ch.tvgId!) ?? null} />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  )
+}
+
+// ── All Channels view ─────────────────────────────────────────────────────────
+
+function AllChannelsView({
+  channels,
+  filters,
+  onFiltersChange,
+  countries,
+  languages,
+  sourcePacks,
+}: {
+  channels: ReturnType<typeof useStreamVaultStore.getState>['channels']
+  filters: Filters
+  onFiltersChange: (f: Filters) => void
+  countries: string[]
+  languages: string[]
+  sourcePacks: string[]
+}) {
+  const [page, setPage] = useState(1)
+
+  const filteredChannels = useMemo(() => {
+    let result = channels
+    if (filters.search.trim()) {
+      const q = filters.search.toLowerCase()
+      result = result.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.groupTitle.toLowerCase().includes(q) ||
+          c.country.toLowerCase().includes(q) ||
+          c.language.toLowerCase().includes(q)
+      )
+    }
+    if (filters.category) result = result.filter((c) => c.groupTitle.toLowerCase() === filters.category.toLowerCase())
+    if (filters.country)  result = result.filter((c) => c.country.toLowerCase() === filters.country.toLowerCase())
+    if (filters.language) result = result.filter((c) => c.language.toLowerCase() === filters.language.toLowerCase())
+    if (filters.sourcePack) result = result.filter((c) => c.sourcePack === filters.sourcePack)
+    return sortChannels(result, filters.sort)
+  }, [channels, filters])
+
+  useEffect(() => { setPage(1) }, [filters])
+
+  const totalPages    = Math.ceil(filteredChannels.length / PAGE_SIZE)
+  const pagedChannels = filteredChannels.slice(0, page * PAGE_SIZE)
+
+  return (
+    <div className="flex gap-6 items-start">
+      {/* Desktop filter sidebar */}
+      <FilterSidebar
+        filters={filters}
+        onFiltersChange={onFiltersChange}
+        countries={countries}
+        languages={languages}
+        sourcePacks={sourcePacks}
+        totalCount={channels.length}
+        filteredCount={filteredChannels.length}
+      />
+
+      {/* Channel grid */}
+      <div className="flex-1 min-w-0">
+        {filteredChannels.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
+            <Tv2 className="h-12 w-12 text-muted-foreground" />
+            <div>
+              <p className="font-semibold">No channels found</p>
+              <p className="text-sm text-muted-foreground mt-1">
+                {channels.length === 0
+                  ? 'Enable source packs in the Marketplace first.'
+                  : 'Try adjusting your filters or search term.'}
+              </p>
+            </div>
+            {channels.length === 0 && (
+              <Button asChild><Link href="/marketplace">Open Marketplace</Link></Button>
+            )}
+          </div>
+        ) : (
+          <>
+            <div className="text-xs text-muted-foreground mb-4">
+              Showing {pagedChannels.length.toLocaleString()} of {filteredChannels.length.toLocaleString()} channels
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+              {pagedChannels.map((ch) => <ChannelCard key={ch.id} channel={ch} />)}
+            </div>
+            {page < totalPages && (
+              <div className="flex justify-center mt-8">
+                <Button variant="outline" onClick={() => setPage((p) => p + 1)} id="load-more-btn">
+                  Load more ({filteredChannels.length - pagedChannels.length} remaining)
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
+
+export default function BrowsePage() {
+  const searchParams  = useSearchParams()
+  const initialQ      = searchParams.get('q') ?? ''
+  const initialTab    = searchParams.get('view') === 'epg' ? 'epg' : 'all'
+
+  const allChannels   = useStreamVaultStore((s) => s.channels)
+  const loadingStates = useStreamVaultStore((s) => s.loadingStates)
+  const isLoading     = Object.values(loadingStates).some((s) => s === 'loading') && allChannels.length === 0
+
+  const [filters,   setFilters]   = useState<Filters>({ ...DEFAULT_FILTERS, search: initialQ })
+  const [activeTab, setActiveTab] = useState(initialTab)
+
+  const handleFiltersChange = useCallback((f: Filters) => setFilters(f), [])
+
+  const countries = useMemo(() => {
+    const set = new Set(allChannels.map((c) => c.country).filter(Boolean))
+    return [...set].sort()
+  }, [allChannels])
+
+  const languages = useMemo(() => {
+    const set = new Set(allChannels.map((c) => c.language).filter(Boolean))
+    return [...set].sort()
+  }, [allChannels])
+
+  const sourcePacks = useMemo(() => {
+    const set = new Set(allChannels.map((c) => c.sourcePack).filter(Boolean))
+    return [...set].sort()
+  }, [allChannels])
+
+  const epgCount = useMemo(() => allChannels.filter((c) => !!c.tvgId).length, [allChannels])
+
+  return (
+    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+
+      {/* Page header */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight">Browse Channels</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          {allChannels.length.toLocaleString()} channels
+          {epgCount > 0 && (
+            <> · <span className="text-primary">{epgCount.toLocaleString()} with EPG</span></>
+          )}
+        </p>
+      </div>
+
+      <Tabs value={activeTab} onValueChange={setActiveTab} id="browse-tabs">
+
+        {/* ── Tab bar ───────────────────────────────────────────────── */}
+        <TabsList className="mb-6">
+          <TabsTrigger value="all" className="gap-2" id="tab-all">
+            <Tv2 className="h-4 w-4" />
+            All Channels
+          </TabsTrigger>
+          <TabsTrigger value="epg" className="gap-2" id="tab-epg">
+            <CalendarDays className="h-4 w-4" />
+            Live Guide
+            {epgCount > 0 && (
+              <span className="ml-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-semibold px-1.5 py-0.5 leading-none">
+                {epgCount}
+              </span>
+            )}
+          </TabsTrigger>
+        </TabsList>
+
+        {/* ── All Channels ──────────────────────────────────────────── */}
+        <TabsContent value="all" className="mt-0 space-y-4">
+          {/* Search + mobile filter row */}
+          <div className="flex gap-3">
+            <SearchBar
+              value={filters.search}
+              onChange={(v) => handleFiltersChange({ ...filters, search: v })}
+              className="flex-1"
+            />
+            {/* Mobile-only filter trigger (hidden on lg+) */}
+            <FilterSidebar
+              filters={filters}
+              onFiltersChange={handleFiltersChange}
+              countries={countries}
+              languages={languages}
+              sourcePacks={sourcePacks}
+              totalCount={allChannels.length}
+              filteredCount={allChannels.length}
+            />
+          </div>
+
+          {isLoading ? (
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+              {Array.from({ length: 20 }).map((_, i) => <ChannelCardSkeleton key={i} />)}
+            </div>
+          ) : (
+            <AllChannelsView
+              channels={allChannels}
+              filters={filters}
+              onFiltersChange={handleFiltersChange}
+              countries={countries}
+              languages={languages}
+              sourcePacks={sourcePacks}
+            />
+          )}
+        </TabsContent>
+
+        {/* ── Live Guide ────────────────────────────────────────────── */}
+        <TabsContent value="epg" className="mt-0">
+          <EpgView channels={allChannels} />
+        </TabsContent>
+
+      </Tabs>
+    </div>
+  )
+}
