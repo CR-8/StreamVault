@@ -2,7 +2,7 @@
 
 import { create } from 'zustand'
 import { subscribeWithSelector } from 'zustand/middleware'
-import type { Channel, CustomSource } from '@/types'
+import type { Channel, CustomSource, StreamHealth } from '@/types'
 import {
   getEnabledPacks,
   setEnabledPacks,
@@ -22,6 +22,9 @@ import {
   addToHistory,
   getWatchHistory,
   isNearStorageLimit,
+  getStreamHealth,
+  markStreamSuccess,
+  markStreamFailure,
 } from '@/lib/storage'
 import { fetchM3U } from '@/lib/fetch-m3u'
 import { parseM3U } from '@/lib/m3u-parser'
@@ -39,6 +42,9 @@ interface StreamVaultState {
   customSources: CustomSource[]
   history: ReturnType<typeof getWatchHistory>
 
+  // Health: url → score (positive = reliable, negative = failing)
+  streamHealth: StreamHealth
+
   // UI state
   loadingStates: LoadingState
   storageWarning: boolean
@@ -52,6 +58,10 @@ interface StreamVaultState {
   removeCustomSource: (id: string) => void
   addToHistory: (channel: Channel) => void
   refreshChannels: () => void
+  /** Call when a stream URL plays successfully */
+  markStreamSuccess: (url: string) => void
+  /** Call when a stream URL fails fatally */
+  markStreamFailure: (url: string) => void
 }
 
 export const useStreamVaultStore = create<StreamVaultState>()(
@@ -61,6 +71,7 @@ export const useStreamVaultStore = create<StreamVaultState>()(
     favorites: [],
     customSources: [],
     history: [],
+    streamHealth: {},
     loadingStates: {},
     storageWarning: false,
 
@@ -80,6 +91,7 @@ export const useStreamVaultStore = create<StreamVaultState>()(
         customSources: getCustomSources(),
         history: getWatchHistory(),
         channels: getAllChannels(),
+        streamHealth: getStreamHealth(),
         storageWarning: isNearStorageLimit(),
       })
 
@@ -175,6 +187,16 @@ export const useStreamVaultStore = create<StreamVaultState>()(
         favorites: getFavorites(),
         history: getWatchHistory(),
       })
+    },
+
+    markStreamSuccess: (url: string) => {
+      markStreamSuccess(url)
+      set({ streamHealth: getStreamHealth() })
+    },
+
+    markStreamFailure: (url: string) => {
+      markStreamFailure(url)
+      set({ streamHealth: getStreamHealth() })
     },
   }))
 )

@@ -16,10 +16,22 @@ interface ChannelCardProps {
   className?: string
 }
 
+/** Returns a summary health score across all sources for a channel */
+function useChannelHealth(channel: Channel): 'good' | 'bad' | 'unknown' {
+  const health = useStreamVaultStore((s) => s.streamHealth)
+  const sources = Array.isArray(channel.sources) && channel.sources.length > 0
+    ? channel.sources
+    : [channel.streamUrl]
+  const scores = sources.map((url) => health[url] ?? null).filter((s) => s !== null) as number[]
+  if (scores.length === 0) return 'unknown'
+  const best = Math.max(...scores)
+  return best >= 1 ? 'good' : best <= -2 ? 'bad' : 'unknown'
+}
 
 export function ChannelCard({ channel, variant = 'default', className }: ChannelCardProps) {
   const isFav = useStreamVaultStore(selectIsFavorite(channel.id))
   const toggleFavorite = useStreamVaultStore((s) => s.toggleFavorite)
+  const healthStatus = useChannelHealth(channel)
 
   if (variant === 'compact') {
     return (
@@ -89,6 +101,18 @@ export function ChannelCard({ channel, variant = 'default', className }: Channel
         <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover/link:bg-black/40 transition-colors duration-200">
           <Play className="h-8 w-8 text-white opacity-0 group-hover/link:opacity-100 transition-opacity duration-200 fill-white" />
         </div>
+
+        {/* Health indicator dot */}
+        {healthStatus !== 'unknown' && (
+          <span
+            className={cn(
+              'absolute top-2 right-2 h-2 w-2 rounded-full ring-1 ring-black/20',
+              healthStatus === 'good'  && 'bg-emerald-400',
+              healthStatus === 'bad'   && 'bg-red-500',
+            )}
+            title={healthStatus === 'good' ? 'Stream working' : 'Stream may be offline'}
+          />
+        )}
       </Link>
 
       {/* Details */}

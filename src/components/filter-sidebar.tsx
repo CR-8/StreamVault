@@ -168,6 +168,8 @@ function FilterPanel({
   )
 }
 
+// ── Desktop sidebar (lg+) ─────────────────────────────────────────────────────
+
 export function FilterSidebar({
   filters,
   onFiltersChange,
@@ -179,13 +181,65 @@ export function FilterSidebar({
   className,
 }: FilterSidebarProps) {
   return (
-    <>
-      {/* Desktop sidebar */}
-      <aside
-        className={cn('hidden lg:flex flex-col gap-2 w-60 shrink-0', className)}
-        aria-label="Channel filters"
+    <aside
+      className={cn('hidden lg:flex flex-col gap-2 w-60 shrink-0', className)}
+      aria-label="Channel filters"
+    >
+      <div className="sticky top-24 rounded-xl border border-border/50 bg-card p-4">
+        <FilterPanel
+          filters={filters}
+          onFiltersChange={onFiltersChange}
+          countries={countries}
+          languages={languages}
+          sourcePacks={sourcePacks}
+        />
+        <div className="mt-4 pt-4 border-t border-border/50 text-xs text-muted-foreground text-center">
+          {filteredCount.toLocaleString()} of {totalCount.toLocaleString()} channels
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+// ── Mobile filter sheet trigger (shown on mobile next to search bar) ──────────
+
+export function MobileFilterSheet({
+  filters,
+  onFiltersChange,
+  countries,
+  languages,
+  sourcePacks,
+  totalCount,
+  filteredCount,
+}: FilterSidebarProps) {
+  const hasActiveFilters = !!(filters.category || filters.country || filters.language || filters.sourcePack)
+
+  return (
+    <Sheet>
+      <SheetTrigger asChild>
+        <Button
+          variant="outline"
+          size="sm"
+          className="lg:hidden h-10 gap-2 shrink-0 px-3"
+          id="mobile-filter-btn"
+          aria-label="Open filters"
+        >
+          <SlidersHorizontal className="h-4 w-4" />
+          <span className="sr-only sm:not-sr-only sm:inline">Filters</span>
+          {hasActiveFilters && (
+            <Badge className="h-4 px-1 text-[10px] leading-none ml-0.5">!</Badge>
+          )}
+        </Button>
+      </SheetTrigger>
+      <SheetContent
+        side="left"
+        className="w-[min(80vw,20rem)] overflow-y-auto"
       >
-        <div className="sticky top-24 rounded-xl border border-border/50 bg-card p-4">
+        {/* Safe top padding that accounts for the sheet's built-in close button */}
+        <SheetHeader className="px-6 pt-6 pb-2">
+          <SheetTitle>Filter channels</SheetTitle>
+        </SheetHeader>
+        <div className="px-6 pb-8">
           <FilterPanel
             filters={filters}
             onFiltersChange={onFiltersChange}
@@ -193,44 +247,16 @@ export function FilterSidebar({
             languages={languages}
             sourcePacks={sourcePacks}
           />
-          <div className="mt-4 pt-4 border-t border-border/50 text-xs text-muted-foreground text-center">
+          <p className="mt-5 text-xs text-muted-foreground text-center">
             {filteredCount.toLocaleString()} of {totalCount.toLocaleString()} channels
-          </div>
+          </p>
         </div>
-      </aside>
-
-      {/* Mobile filter sheet trigger */}
-      <Sheet>
-        <SheetTrigger asChild>
-          <Button variant="outline" size="sm" className="lg:hidden gap-2" id="mobile-filter-btn">
-            <SlidersHorizontal className="h-4 w-4" />
-            Filters
-            {(filters.category || filters.country || filters.sourcePack) && (
-              <Badge className="h-4 px-1 text-xs ml-1">!</Badge>
-            )}
-          </Button>
-        </SheetTrigger>
-        <SheetContent side="left" className="w-80 overflow-y-auto pt-8">
-          <SheetHeader>
-            <SheetTitle>Filter channels</SheetTitle>
-          </SheetHeader>
-          <div className="mt-5">
-            <FilterPanel
-              filters={filters}
-              onFiltersChange={onFiltersChange}
-              countries={countries}
-              languages={languages}
-              sourcePacks={sourcePacks}
-            />
-            <p className="mt-5 text-xs text-muted-foreground text-center">
-              {filteredCount.toLocaleString()} of {totalCount.toLocaleString()} channels
-            </p>
-          </div>
-        </SheetContent>
-      </Sheet>
-    </>
+      </SheetContent>
+    </Sheet>
   )
 }
+
+// ── Search bar ────────────────────────────────────────────────────────────────
 
 interface SearchBarProps {
   value: string

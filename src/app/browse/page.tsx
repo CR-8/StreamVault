@@ -4,7 +4,7 @@ import { useMemo, useState, useCallback, useEffect, useRef, Suspense } from 'rea
 import { useSearchParams } from 'next/navigation'
 import { ChannelCard, ChannelCardSkeleton } from '@/components/channel-card'
 import { EpgCard, EpgCardSkeleton } from '@/components/epg-card'
-import { FilterSidebar, SearchBar, type Filters, DEFAULT_FILTERS } from '@/components/filter-sidebar'
+import { FilterSidebar, MobileFilterSheet, SearchBar, type Filters, DEFAULT_FILTERS } from '@/components/filter-sidebar'
 import { useStreamVaultStore } from '@/store/useStreamVaultStore'
 import { useEpgStore } from '@/store/useEpgStore'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,34 @@ import { cn } from '@/lib/utils'
 import Link from 'next/link'
 
 const PAGE_SIZE = 30
+const SESSION_KEY = 'browse-state'
+
+// ── Session state persistence ─────────────────────────────────────────────────
+
+interface BrowseSession {
+  filters: Filters
+  page: number
+  tab: string
+}
+
+function readSession(): Partial<BrowseSession> {
+  if (typeof window === 'undefined') return {}
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY)
+    return raw ? (JSON.parse(raw) as Partial<BrowseSession>) : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeSession(state: BrowseSession) {
+  if (typeof window === 'undefined') return
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify(state))
+  } catch {
+    /* ignore quota errors */
+  }
+}
 
 // ── Pagination component ─────────────────────────────────────────────────────
 
@@ -107,10 +135,10 @@ function sortChannels(
 ) {
   return [...channels].sort((a, b) => {
     switch (sort) {
-      case 'name-asc':  return a.name.localeCompare(b.name)
+      case 'name-asc': return a.name.localeCompare(b.name)
       case 'name-desc': return b.name.localeCompare(a.name)
-      case 'category':  return a.groupTitle.localeCompare(b.groupTitle) || a.name.localeCompare(b.name)
-      case 'country':   return a.country.localeCompare(b.country) || a.name.localeCompare(b.name)
+      case 'category': return a.groupTitle.localeCompare(b.groupTitle) || a.name.localeCompare(b.name)
+      case 'country': return a.country.localeCompare(b.country) || a.name.localeCompare(b.name)
       default: return 0
     }
   })
@@ -148,7 +176,7 @@ function EpgView({ channels }: { channels: ReturnType<typeof useStreamVaultStore
   }, [epgCapable, data])
 
   const isLoading = state === 'loading'
-  const isDone    = state === 'done'
+  const isDone = state === 'done'
 
   if (epgCapable.length === 0 && !isLoading) {
     return (
@@ -191,12 +219,18 @@ function EpgView({ channels }: { channels: ReturnType<typeof useStreamVaultStore
               {' · '}
               <span>{otherChannels.length} no data</span>
             </p>
+          ) : state === 'error' ? (
+            <p className="text-sm text-muted-foreground">
+              <span className="font-semibold text-destructive">EPG unavailable</span>
+              {' · '}
+              <span>epg.pw is not responding right now — try again later</span>
+            </p>
           ) : null}
         </div>
         {(isDone || state === 'error') && (
           <Button variant="ghost" size="sm" className="gap-1.5 shrink-0" onClick={handleRefresh}>
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
+            Retry
           </Button>
         )}
       </div>
@@ -218,8 +252,8 @@ function EpgView({ channels }: { channels: ReturnType<typeof useStreamVaultStore
             {isLoading
               ? Array.from({ length: 10 }).map((_, i) => <EpgCardSkeleton key={i} />)
               : liveChannels.map((ch) => (
-                  <EpgCard key={ch.id} channel={ch} epg={data.get(ch.tvgId!) ?? null} />
-                ))}
+                <EpgCard key={ch.id} channel={ch} epg={data.get(ch.tvgId!) ?? null} />
+              ))}
           </div>
         </section>
       )}
@@ -264,6 +298,8 @@ function AllChannelsView({
   countries,
   languages,
   sourcePacks,
+  page,
+  onPageChange,
 }: {
   channels: ReturnType<typeof useStreamVaultStore.getState>['channels']
   filters: Filters
@@ -271,9 +307,9 @@ function AllChannelsView({
   countries: string[]
   languages: string[]
   sourcePacks: string[]
+  page: number
+  onPageChange: (p: number) => void
 }) {
-  const [page, setPage] = useState(1)
-
   const filteredChannels = useMemo(() => {
     let result = channels
     if (filters.search.trim()) {
@@ -287,27 +323,25 @@ function AllChannelsView({
       )
     }
     if (filters.category) result = result.filter((c) => c.groupTitle.toLowerCase() === filters.category.toLowerCase())
-    if (filters.country)  result = result.filter((c) => c.country.toLowerCase() === filters.country.toLowerCase())
+    if (filters.country) result = result.filter((c) => c.country.toLowerCase() === filters.country.toLowerCase())
     if (filters.language) result = result.filter((c) => c.language.toLowerCase() === filters.language.toLowerCase())
     if (filters.sourcePack) result = result.filter((c) => c.sourcePack === filters.sourcePack)
     return sortChannels(result, filters.sort)
   }, [channels, filters])
 
-  useEffect(() => { setPage(1) }, [filters])
-
-  const totalPages    = Math.ceil(filteredChannels.length / PAGE_SIZE)
+  const totalPages = Math.ceil(filteredChannels.length / PAGE_SIZE)
   const pagedChannels = filteredChannels.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
 
   const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' })
 
   const handlePageChange = (p: number) => {
-    setPage(p)
+    onPageChange(p)
     scrollToTop()
   }
 
   return (
     <div className="flex gap-6 items-start">
-      {/* Desktop filter sidebar */}
+      {/* Desktop filter sidebar — hidden below lg */}
       <FilterSidebar
         filters={filters}
         onFiltersChange={onFiltersChange}
@@ -320,6 +354,14 @@ function AllChannelsView({
 
       {/* Channel grid */}
       <div className="flex-1 min-w-0">
+        {/* Desktop search bar — only shown on lg+ since mobile has its own bar */}
+        <div className="hidden lg:block mb-4">
+          <SearchBar
+            value={filters.search}
+            onChange={(v) => onFiltersChange({ ...filters, search: v })}
+          />
+        </div>
+
         {filteredChannels.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-4 py-24 text-center">
             <Tv2 className="h-12 w-12 text-muted-foreground" />
@@ -347,7 +389,7 @@ function AllChannelsView({
               </p>
             </div>
 
-            {/* Grid */}
+            {/* Grid — 2-col on mobile, expands on larger screens */}
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
               {pagedChannels.map((ch) => <ChannelCard key={ch.id} channel={ch} />)}
             </div>
@@ -368,16 +410,45 @@ function AllChannelsView({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 function BrowsePageInner() {
-  const searchParams  = useSearchParams()
-  const initialQ      = searchParams.get('q') ?? ''
-  const initialTab    = searchParams.get('view') === 'epg' ? 'epg' : 'all'
+  const searchParams = useSearchParams()
+  const initialQ = searchParams.get('q') ?? ''
+  const initialTab = searchParams.get('view') === 'epg' ? 'epg' : 'all'
 
-  const allChannels   = useStreamVaultStore((s) => s.channels)
+  // Restore persisted session (runs once on mount — client only)
+  const session = useMemo(() => {
+    const s = readSession()
+    return {
+      filters: initialQ
+        ? { ...DEFAULT_FILTERS, search: initialQ }  // URL param wins over session for search
+        : (s.filters ?? { ...DEFAULT_FILTERS }),
+      page: s.page ?? 1,
+      tab: searchParams.get('view') ? initialTab : (s.tab ?? 'all'),
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])  // intentionally run once
+
+  const allChannels = useStreamVaultStore((s) => s.channels)
   const loadingStates = useStreamVaultStore((s) => s.loadingStates)
-  const isLoading     = Object.values(loadingStates).some((s) => s === 'loading') && allChannels.length === 0
+  const isLoading = Object.values(loadingStates).some((s) => s === 'loading') && allChannels.length === 0
 
-  const [filters,   setFilters]   = useState<Filters>({ ...DEFAULT_FILTERS, search: initialQ })
-  const [activeTab, setActiveTab] = useState(initialTab)
+  const [filters, setFilters] = useState<Filters>(session.filters)
+  const [page, setPage] = useState<number>(session.page)
+  const [activeTab, setActiveTab] = useState(session.tab)
+
+  // Persist state to sessionStorage whenever it changes
+  useEffect(() => {
+    writeSession({ filters, page, tab: activeTab })
+  }, [filters, page, activeTab])
+
+  // Reset page to 1 whenever filters change (but not on initial mount)
+  const isFirstFilterRender = useRef(true)
+  useEffect(() => {
+    if (isFirstFilterRender.current) {
+      isFirstFilterRender.current = false
+      return
+    }
+    setPage(1)
+  }, [filters])
 
   const handleFiltersChange = useCallback((f: Filters) => setFilters(f), [])
 
@@ -398,8 +469,28 @@ function BrowsePageInner() {
 
   const epgCount = useMemo(() => allChannels.filter((c) => !!c.tvgId).length, [allChannels])
 
+  // Filtered count for mobile sheet badge
+  const filteredCount = useMemo(() => {
+    let result = allChannels
+    if (filters.search.trim()) {
+      const q = filters.search.toLowerCase()
+      result = result.filter(
+        (c) =>
+          c.name.toLowerCase().includes(q) ||
+          c.groupTitle.toLowerCase().includes(q) ||
+          c.country.toLowerCase().includes(q) ||
+          c.language.toLowerCase().includes(q)
+      )
+    }
+    if (filters.category) result = result.filter((c) => c.groupTitle.toLowerCase() === filters.category.toLowerCase())
+    if (filters.country) result = result.filter((c) => c.country.toLowerCase() === filters.country.toLowerCase())
+    if (filters.language) result = result.filter((c) => c.language.toLowerCase() === filters.language.toLowerCase())
+    if (filters.sourcePack) result = result.filter((c) => c.sourcePack === filters.sourcePack)
+    return result.length
+  }, [allChannels, filters])
+
   return (
-    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+    <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
 
       {/* Page header */}
       <div className="mb-6">
@@ -415,7 +506,7 @@ function BrowsePageInner() {
       <Tabs value={activeTab} onValueChange={setActiveTab} id="browse-tabs">
 
         {/* ── Tab bar ───────────────────────────────────────────────── */}
-        <TabsList className="mb-6">
+        <TabsList className="mb-5">
           <TabsTrigger value="all" className="gap-2" id="tab-all">
             <Tv2 className="h-4 w-4" />
             All Channels
@@ -433,22 +524,25 @@ function BrowsePageInner() {
 
         {/* ── All Channels ──────────────────────────────────────────── */}
         <TabsContent value="all" className="mt-0 space-y-4">
-          {/* Search + mobile filter row */}
-          <div className="flex gap-3">
+          {/*
+            Mobile: search bar + filter button side by side.
+            The filter button (MobileFilterSheet) is hidden on lg+ since the
+            desktop sidebar is rendered inside AllChannelsView.
+          */}
+          <div className="flex gap-2 lg:hidden">
             <SearchBar
               value={filters.search}
               onChange={(v) => handleFiltersChange({ ...filters, search: v })}
-              className="flex-1"
+              className="flex-1 min-w-0"
             />
-            {/* Mobile-only filter trigger (hidden on lg+) */}
-            <FilterSidebar
+            <MobileFilterSheet
               filters={filters}
               onFiltersChange={handleFiltersChange}
               countries={countries}
               languages={languages}
               sourcePacks={sourcePacks}
               totalCount={allChannels.length}
-              filteredCount={allChannels.length}
+              filteredCount={filteredCount}
             />
           </div>
 
@@ -464,6 +558,8 @@ function BrowsePageInner() {
               countries={countries}
               languages={languages}
               sourcePacks={sourcePacks}
+              page={page}
+              onPageChange={setPage}
             />
           )}
         </TabsContent>

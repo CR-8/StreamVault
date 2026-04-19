@@ -21,16 +21,20 @@ export interface SourcePack {
 }
 
 export interface Channel {
-  id: string           // stable hash of stream URL
+  id: string           // stable hash of primary stream URL
   name: string
   logo: string
-  streamUrl: string
+  streamUrl: string    // primary (best) source URL
+  sources: string[]    // all known source URLs for this channel (max 5), ordered best-first
   groupTitle: string   // raw from M3U, used for section/category mapping
   country: string
   language: string
   sourcePack: string   // which pack this channel came from
   tvgId?: string       // EPG identifier from tvg-id attribute
 }
+
+/** Per-URL health score. Positive = reliable, negative = failing. */
+export type StreamHealth = Record<string, number>
 
 export interface CustomSource {
   id: string

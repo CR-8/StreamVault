@@ -1,4 +1,4 @@
-import type { Channel, CustomSource, WatchHistoryEntry, UserProfile } from '@/types'
+import type { Channel, CustomSource, WatchHistoryEntry, UserProfile, StreamHealth } from '@/types'
 import { SOURCE_PACKS } from '@/data/source-packs'
 
 // ── Key constants ──────────────────────────────────────────────────────────────
@@ -9,10 +9,11 @@ const KEYS = {
   FAVORITES: 'streamvault:favorites',
   CUSTOM_SOURCES: 'streamvault:custom_sources',
   HISTORY: 'streamvault:history',
+  STREAM_HEALTH: 'streamvault:stream_health',
 } as const
 
-const MAX_HISTORY = 50
-const STORAGE_WARNING_THRESHOLD = 4 * 1024 * 1024 // 4 MB
+const MAX_HISTORY = 40
+const STORAGE_WARNING_THRESHOLD = 5 * 1024 * 1024 // 5 MB
 
 // ── Internal safe helpers ──────────────────────────────────────────────────────
 
@@ -115,38 +116,48 @@ function getPackPriority(packId: string): number {
 
 export function getAllChannels(): Channel[] {
   const packs = getEnabledPacks()
-  const byId = new Map<string, Channel>()      // dedupe by stream-URL hash
-  const byName = new Map<string, Channel>()    // dedupe by normalised channel name
+  const byName = new Map<string, Channel>()  // normalised name → best channel
 
   for (const packId of packs) {
     const packPriority = getPackPriority(packId)
     const channels = getChannelsForPack(packId)
 
     for (const ch of channels) {
-      // 1. URL-hash deduplication (exact same stream)
-      if (!byId.has(ch.id)) {
-        byId.set(ch.id, ch)
-      }
+      // Backward compat: channels cached before sources[] was introduced
+      const chSources: string[] =
+        Array.isArray(ch.sources) && ch.sources.length > 0
+          ? ch.sources
+          : [ch.streamUrl]
 
-      // 2. Name-based conflict resolution (same channel, different feeds)
       const normName = ch.name.trim().toLowerCase()
       const existing = byName.get(normName)
+
       if (!existing) {
-        byName.set(normName, ch)
+        byName.set(normName, { ...ch, sources: chSources })
       } else {
         const existingPriority = getPackPriority(existing.sourcePack)
-        if (packPriority > existingPriority) {
-          // Higher-priority pack wins — replace the lower-quality entry
-          byId.delete(existing.id)
-          byId.set(ch.id, ch)
-          byName.set(normName, ch)
+
+        // Merge unique source URLs from this pack (cap at 3)
+        const merged = [...existing.sources]
+        for (const url of chSources) {
+          if (!merged.includes(url) && merged.length < 3) merged.push(url)
         }
-        // else: keep existing, skip this duplicate
+        existing.sources = merged
+
+        // If higher-priority pack, promote its URL to primary
+        if (packPriority > existingPriority) {
+          existing.streamUrl  = ch.streamUrl
+          existing.id         = ch.id
+          existing.sourcePack = ch.sourcePack
+          existing.logo       = ch.logo || existing.logo
+          existing.tvgId      = ch.tvgId || existing.tvgId
+          byName.set(normName, existing)
+        }
       }
     }
   }
 
-  return Array.from(byId.values())
+  return Array.from(byName.values())
 }
 
 export function getChannelById(id: string): Channel | null {
@@ -260,4 +271,44 @@ export function clearAllData(): void {
   } catch {
     // ignore
   }
+}
+
+// ── Stream health ──────────────────────────────────────────────────────────────
+// Score is a signed integer; positive = reliable, negative = failing.
+// markSuccess: +1  |  markFailure: -2
+// Capped at MAX_HEALTH_ENTRIES to avoid unbounded growth.
+
+const MAX_HEALTH_ENTRIES = 500
+
+export function getStreamHealth(): StreamHealth {
+  return safeGet<StreamHealth>(KEYS.STREAM_HEALTH, {})
+}
+
+function saveStreamHealth(health: StreamHealth): void {
+  const entries = Object.entries(health)
+  if (entries.length > MAX_HEALTH_ENTRIES) {
+    // Evict the lowest-scoring URLs to stay under the cap
+    const trimmed = Object.fromEntries(
+      entries.sort((a, b) => b[1] - a[1]).slice(0, MAX_HEALTH_ENTRIES)
+    )
+    safeSet(KEYS.STREAM_HEALTH, trimmed)
+  } else {
+    safeSet(KEYS.STREAM_HEALTH, health)
+  }
+}
+
+export function markStreamSuccess(url: string): void {
+  const health = getStreamHealth()
+  health[url] = (health[url] ?? 0) + 1
+  saveStreamHealth(health)
+}
+
+export function markStreamFailure(url: string): void {
+  const health = getStreamHealth()
+  health[url] = (health[url] ?? 0) - 2
+  saveStreamHealth(health)
+}
+
+export function getStreamScore(url: string): number {
+  return getStreamHealth()[url] ?? 0
 }

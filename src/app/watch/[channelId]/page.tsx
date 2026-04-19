@@ -81,6 +81,7 @@ export default function WatchPage({ params }: WatchPageProps) {
           {channel ? (
             <HlsPlayer
               streamUrl={channel.streamUrl}
+              sources={channel.sources}
               channelName={channel.name}
               autoPlay
             />
