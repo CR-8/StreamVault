@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState, useCallback, useEffect, useRef } from 'react'
+import { useMemo, useState, useCallback, useEffect, useRef, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { ChannelCard, ChannelCardSkeleton } from '@/components/channel-card'
 import { EpgCard, EpgCardSkeleton } from '@/components/epg-card'
@@ -367,7 +367,7 @@ function AllChannelsView({
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default function BrowsePage() {
+function BrowsePageInner() {
   const searchParams  = useSearchParams()
   const initialQ      = searchParams.get('q') ?? ''
   const initialTab    = searchParams.get('view') === 'epg' ? 'epg' : 'all'
@@ -475,5 +475,13 @@ export default function BrowsePage() {
 
       </Tabs>
     </div>
+  )
+}
+
+export default function BrowsePage() {
+  return (
+    <Suspense fallback={null}>
+      <BrowsePageInner />
+    </Suspense>
   )
 }
