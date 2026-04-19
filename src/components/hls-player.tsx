@@ -383,7 +383,7 @@ export function HlsPlayer({
           e.preventDefault()
           if (video.paused) {
             video.play().catch(err => {
-              if (err.name !== 'AbortError' && err.name !== 'NotAllowedError') {
+              if (err.name !== 'AbortError' && err.name !== 'NotAllowedError' && err.name !== 'NotSupportedError') {
                 console.warn('[HlsPlayer] Play error:', err)
               }
             })
@@ -425,7 +425,7 @@ export function HlsPlayer({
     if (!video) return
     if (video.paused) {
       video.play().catch((e) => {
-        if (e.name !== 'AbortError' && e.name !== 'NotAllowedError') {
+        if (e.name !== 'AbortError' && e.name !== 'NotAllowedError' && e.name !== 'NotSupportedError') {
           console.warn('[HlsPlayer] Play error:', e)
         }
       })

@@ -95,11 +95,8 @@ export async function GET(request: NextRequest) {
     const upstream = await fetch(targetUrl, {
       signal: controller.signal,
       headers: {
-        // Mimic a real browser/player so servers don't block us
-        'User-Agent':      'Mozilla/5.0 (compatible; StreamVault/1.0)',
-        'Referer':         targetUrl,
-        'Origin':          `${parsedUrl.protocol}//${parsedUrl.host}`,
-        'Accept':          '*/*',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+        'Accept': '*/*',
         'Accept-Language': 'en-US,en;q=0.9',
       },
     })
@@ -123,9 +120,9 @@ export async function GET(request: NextRequest) {
       return new Response(rewritten, {
         status: 200,
         headers: {
-          'Content-Type':                'application/vnd.apple.mpegurl; charset=utf-8',
+          'Content-Type': 'application/vnd.apple.mpegurl; charset=utf-8',
           'Access-Control-Allow-Origin': '*',
-          'Cache-Control':               'public, max-age=10, stale-while-revalidate=5',
+          'Cache-Control': 'public, max-age=10, stale-while-revalidate=5',
           // Shorter TTL for live playlists which update every few seconds
         },
       })
@@ -136,9 +133,9 @@ export async function GET(request: NextRequest) {
     return new Response(upstream.body, {
       status: upstream.status,
       headers: {
-        'Content-Type':                contentType || 'application/octet-stream',
+        'Content-Type': contentType || 'application/octet-stream',
         'Access-Control-Allow-Origin': '*',
-        'Cache-Control':               'public, max-age=300',
+        'Cache-Control': 'public, max-age=300',
       },
     })
   } catch (error) {
@@ -157,7 +154,7 @@ export async function OPTIONS() {
   return new Response(null, {
     status: 204,
     headers: {
-      'Access-Control-Allow-Origin':  '*',
+      'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type, Range',
       'Access-Control-Expose-Headers': 'Content-Length, Content-Range',
