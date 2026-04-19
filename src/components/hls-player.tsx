@@ -204,7 +204,11 @@ export function HlsPlayer({
     setErrorMessage('')
 
     // ── Native HLS (Safari) / non-HLS path ───────────────────────────────
-    if (!isHlsUrl(url) || (video.canPlayType('application/vnd.apple.mpegurl') && !Hls.isSupported())) {
+    const isMp4 = url.split('?')[0].toLowerCase().endsWith('.mp4')
+    const canPlayNativeHls = video.canPlayType('application/vnd.apple.mpegurl')
+    const hlsSupported = Hls.isSupported()
+
+    if (isMp4 || (canPlayNativeHls && !hlsSupported) || !hlsSupported) {
       video.src = url
       if (autoPlay) {
         video.play().catch((e: DOMException) => {
@@ -213,6 +217,9 @@ export function HlsPlayer({
             console.warn('[HlsPlayer] Autoplay blocked:', e)
             setStatus('paused')
             return
+          }
+          if (e.name === 'NotSupportedError') {
+             // Fall through to failure
           }
           markFailure(playingUrl.current)
           tryNext()
@@ -228,11 +235,6 @@ export function HlsPlayer({
     }
 
     // ── HLS.js path ───────────────────────────────────────────────────────
-    if (!Hls.isSupported()) {
-      setStatus('error')
-      setErrorMessage('HLS is not supported in this browser.')
-      return
-    }
 
     const hls = new Hls({
       enableWorker: true,
