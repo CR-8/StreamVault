@@ -9,10 +9,97 @@ import { useStreamVaultStore } from '@/store/useStreamVaultStore'
 import { useEpgStore } from '@/store/useEpgStore'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
-import { Tv2, CalendarDays, Loader2, RefreshCw, Radio } from 'lucide-react'
+import { Tv2, CalendarDays, Loader2, RefreshCw, Radio, ChevronLeft, ChevronRight } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import Link from 'next/link'
 
-const PAGE_SIZE = 60
+const PAGE_SIZE = 30
+
+// ── Pagination component ─────────────────────────────────────────────────────
+
+function Pagination({
+  page,
+  totalPages,
+  onPageChange,
+}: {
+  page: number
+  totalPages: number
+  onPageChange: (p: number) => void
+}) {
+  if (totalPages <= 1) return null
+
+  // Generate page numbers with ellipsis
+  const getPages = (): (number | '…')[] => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1)
+    const pages: (number | '…')[] = []
+    pages.push(1)
+    if (page > 3) pages.push('…')
+    for (let p = Math.max(2, page - 1); p <= Math.min(totalPages - 1, page + 1); p++) pages.push(p)
+    if (page < totalPages - 2) pages.push('…')
+    pages.push(totalPages)
+    return pages
+  }
+
+  const pages = getPages()
+
+  return (
+    <nav
+      aria-label="Pagination"
+      className="flex items-center justify-center gap-1 mt-8 select-none"
+    >
+      {/* Prev */}
+      <Button
+        variant="outline"
+        size="icon"
+        className="h-9 w-9"
+        onClick={() => onPageChange(page - 1)}
+        disabled={page === 1}
+        aria-label="Previous page"
+      >
+        <ChevronLeft className="h-4 w-4" />
+      </Button>
+
+      {/* Page numbers */}
+      {pages.map((p, i) =>
+        p === '…' ? (
+          <span
+            key={`ellipsis-${i}`}
+            className="w-9 h-9 flex items-center justify-center text-sm text-muted-foreground"
+          >
+            …
+          </span>
+        ) : (
+          <button
+            key={p}
+            onClick={() => onPageChange(p)}
+            aria-label={`Page ${p}`}
+            aria-current={p === page ? 'page' : undefined}
+            className={cn(
+              'h-9 w-9 rounded-md text-sm font-medium transition-colors',
+              p === page
+                ? 'bg-primary text-primary-foreground'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+            )}
+          >
+            {p}
+          </button>
+        )
+      )}
+
+      {/* Next */}
+      <Button
+        variant="outline"
+        size="icon"
+        className="h-9 w-9"
+        onClick={() => onPageChange(page + 1)}
+        disabled={page === totalPages}
+        aria-label="Next page"
+      >
+        <ChevronRight className="h-4 w-4" />
+      </Button>
+    </nav>
+  )
+}
 
 function sortChannels(
   channels: ReturnType<typeof useStreamVaultStore.getState>['channels'],
@@ -209,7 +296,14 @@ function AllChannelsView({
   useEffect(() => { setPage(1) }, [filters])
 
   const totalPages    = Math.ceil(filteredChannels.length / PAGE_SIZE)
-  const pagedChannels = filteredChannels.slice(0, page * PAGE_SIZE)
+  const pagedChannels = filteredChannels.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE)
+
+  const scrollToTop = () => window.scrollTo({ top: 0, behavior: 'smooth' })
+
+  const handlePageChange = (p: number) => {
+    setPage(p)
+    scrollToTop()
+  }
 
   return (
     <div className="flex gap-6 items-start">
@@ -243,19 +337,27 @@ function AllChannelsView({
           </div>
         ) : (
           <>
-            <div className="text-xs text-muted-foreground mb-4">
-              Showing {pagedChannels.length.toLocaleString()} of {filteredChannels.length.toLocaleString()} channels
+            {/* Results count + page info */}
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-xs text-muted-foreground">
+                {filteredChannels.length.toLocaleString()} channels
+                {totalPages > 1 && (
+                  <> · page <span className="font-medium text-foreground">{page}</span> of {totalPages}</>
+                )}
+              </p>
             </div>
+
+            {/* Grid */}
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
               {pagedChannels.map((ch) => <ChannelCard key={ch.id} channel={ch} />)}
             </div>
-            {page < totalPages && (
-              <div className="flex justify-center mt-8">
-                <Button variant="outline" onClick={() => setPage((p) => p + 1)} id="load-more-btn">
-                  Load more ({filteredChannels.length - pagedChannels.length} remaining)
-                </Button>
-              </div>
-            )}
+
+            {/* Pagination */}
+            <Pagination
+              page={page}
+              totalPages={totalPages}
+              onPageChange={handlePageChange}
+            />
           </>
         )}
       </div>
