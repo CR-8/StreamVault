@@ -413,12 +413,15 @@ export function HlsPlayer({
 
     // Subtitle track events
     hls.on(Hls.Events.SUBTITLE_TRACKS_UPDATED, (_, data) => {
-      const tracks = data.subtitleTracks.map((t, idx) => ({
-        id: String(idx),
-        label: t.name || `Track ${idx + 1}`,
-        lang: t.lang,
-        kind: t.kind || 'subtitles',
-      }))
+      const tracks = data.subtitleTracks.map((t, idx) => {
+        const track: { id: string; label: string; lang?: string; kind: string } = {
+          id: String(idx),
+          label: t.name || `Track ${idx + 1}`,
+          lang: t.lang,
+          kind: 'subtitles',
+        }
+        return track
+      })
       setSubtitles(tracks)
     })
 
